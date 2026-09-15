@@ -1,0 +1,66 @@
+extern fn zen_mysql_connect(
+  string host,
+  string user,
+  string password,
+  string database,
+  int port
+) long
+
+extern fn zen_mysql_close(long handle) void
+
+extern fn zen_mysql_query(
+  long handle,
+  string sql
+) int
+
+extern fn zen_mysql_error(
+  long handle
+) string
+
+
+struct Database {
+  long handle
+
+  ok() bool {
+    return this.handle != 0
+  }
+
+  query(string sql) int {
+    return zen_mysql_query(this.handle, sql)
+  }
+
+  error() string {
+    return zen_mysql_error(this.handle)
+  }
+
+  close() void {
+    zen_mysql_close(this.handle)
+  }
+}
+
+
+fn connect(
+  string host,
+  string user,
+  string password,
+  string database,
+  int port
+) Database {
+  long h = zen_mysql_connect(
+    host,
+    user,
+    password,
+    database,
+    port
+  )
+
+  return {
+    handle: h
+  }
+}
+
+
+export(
+  Database,
+  connect
+)

@@ -1,0 +1,40 @@
+import (Database, connect) from "lib.zen"
+
+Database db = connect(
+  "127.0.0.1",
+  "root",
+  "",
+  "test",
+  3306
+)
+
+if (!db.ok()) {
+  screen(db.error())
+  os.exit(1)
+}
+
+screen("connected")
+
+int code = db.query(
+  "CREATE TABLE IF NOT EXISTS users (id INT, name TEXT)"
+)
+
+screen(code)
+
+if (code != 0) {
+  screen(db.error())
+}
+
+code = db.query(
+  "INSERT INTO users VALUES (1, 'Jishith')"
+)
+
+screen(code)
+
+if (code != 0) {
+  screen(db.error())
+}
+
+db.close()
+
+screen("closed")

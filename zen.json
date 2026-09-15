@@ -1,0 +1,12 @@
+{
+  "name": "mysql",
+  "version": "1.0.0",
+  "author": "your-github-username",
+  "repo": "https://github.com/your-username/zen-mysql",
+  "description": "",
+  "bin": "lib.zen",
+  "dependencies": {},
+  "native": [
+    "native/mysql.c"
+  ]
+}

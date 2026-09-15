@@ -1,4 +1,11 @@
-import (Database, connect) from "lib.zen"
+import (
+  Database,
+  Result,
+  Row,
+  Statement,
+  connect
+) from "lib.zen"
+
 
 Database db = connect(
   "127.0.0.1",
@@ -16,24 +23,117 @@ if (!db.ok()) {
 screen("connected")
 
 int code = db.query(
-  "CREATE TABLE IF NOT EXISTS users (id INT, name TEXT)"
+  "DROP TABLE IF EXISTS users"
 )
 
 screen(code)
-
-if (code != 0) {
-  screen(db.error())
-}
 
 code = db.query(
-  "INSERT INTO users VALUES (1, 'Jishith')"
+  "CREATE TABLE users (id INT, name TEXT, age INT)"
 )
 
 screen(code)
 
 if (code != 0) {
   screen(db.error())
+  os.exit(1)
 }
+
+
+code = db.query(
+  "INSERT INTO users (id, name, age) VALUES (2, 'Zen', 21)"
+)
+
+screen(code)
+screen(db.affectedRows())
+screen(db.insertId())
+
+if (code != 0) {
+  screen(db.error())
+  os.exit(1)
+}
+
+
+code = db.query(
+  "SELECT id, name, age FROM users"
+)
+
+screen(code)
+
+if (code != 0) {
+  screen(db.error())
+  os.exit(1)
+}
+
+
+Result result = db.result()
+
+screen(result.columnCount())
+screen(result.rowCount())
+
+
+Row row = result.next()
+
+while (row.valid()) {
+  screen(row.getInt(0))
+  screen(row.getString(1))
+  screen(row.getInt(2))
+
+  row.close()
+
+  row = result.next()
+}
+
+result.close()
+
+
+code = db.begin()
+
+screen(code)
+
+if (code != 0) {
+  screen(db.error())
+  os.exit(1)
+}
+
+
+code = db.query(
+  "INSERT INTO users (id, name, age) VALUES (3, 'Transaction', 30)"
+)
+
+screen(code)
+
+if (code != 0) {
+  screen(db.error())
+  db.rollback()
+  os.exit(1)
+}
+
+
+code = db.rollback()
+
+screen(code)
+
+
+Statement stmt = db.prepare(
+  "INSERT INTO users (id, name, age) VALUES (?, ?, ?)"
+)
+
+stmt.bindInt(0, 4)
+stmt.bindString(1, "Prepared")
+stmt.bindInt(2, 25)
+
+code = stmt.execute()
+
+screen(code)
+screen(stmt.affectedRows())
+
+if (code != 0) {
+  screen(db.error())
+}
+
+stmt.close()
+
 
 db.close()
 

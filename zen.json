@@ -1,12 +1,12 @@
 {
-  "name": "mysql",
+  "name": "mariadb",
   "version": "1.0.0",
-  "author": "your-github-username",
-  "repo": "https://github.com/your-username/zen-mysql",
-  "description": "",
+  "author": "Jishith-dev",
+  "repo": "https://github.com/Jishith-dev/mariadb",
+  "description": "MariaDB-compatible database client for the Zen programming language.",
   "bin": "lib.zen",
   "dependencies": {},
   "native": [
-    "native/mysql.c"
+    "native/mariadb.c"
   ]
 }

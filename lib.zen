@@ -8,6 +8,8 @@ extern fn zen_mysql_connect(
 
 extern fn zen_mysql_close(long handle) void
 
+extern fn zen_mysql_ok(long handle) int
+
 extern fn zen_mysql_query(
   long handle,
   string sql
@@ -17,20 +19,290 @@ extern fn zen_mysql_error(
   long handle
 ) string
 
+extern fn zen_mysql_affected_rows(long handle) long
+
+extern fn zen_mysql_insert_id(long handle) long
+
+
+extern fn zen_mysql_result(long handle) long
+
+extern fn zen_mysql_column_count(
+  long result
+) int
+
+extern fn zen_mysql_row_count(
+  long result
+) long
+
+extern fn zen_mysql_next_row(
+  long result
+) long
+
+extern fn zen_mysql_result_free(
+  long result
+) void
+
+
+extern fn zen_mysql_row_valid(
+  long row
+) int
+
+extern fn zen_mysql_row_get_string(
+  long row,
+  int index
+) string
+
+extern fn zen_mysql_row_get_int(
+  long row,
+  int index
+) int
+
+extern fn zen_mysql_row_get_long(
+  long row,
+  int index
+) long
+
+extern fn zen_mysql_row_get_double(
+  long row,
+  int index
+) double
+
+extern fn zen_mysql_row_free(
+  long row
+) void
+
+
+extern fn zen_mysql_begin(
+  long handle
+) int
+
+extern fn zen_mysql_commit(
+  long handle
+) int
+
+extern fn zen_mysql_rollback(
+  long handle
+) int
+
+
+extern fn zen_mysql_prepare(
+  long handle,
+  string sql
+) long
+
+extern fn zen_mysql_stmt_bind_int(
+  long stmt,
+  int index,
+  int value
+) int
+
+extern fn zen_mysql_stmt_bind_long(
+  long stmt,
+  int index,
+  long value
+) int
+
+extern fn zen_mysql_stmt_bind_double(
+  long stmt,
+  int index,
+  double value
+) int
+
+extern fn zen_mysql_stmt_bind_string(
+  long stmt,
+  int index,
+  string value
+) int
+
+extern fn zen_mysql_stmt_execute(
+  long stmt
+) int
+
+extern fn zen_mysql_stmt_affected_rows(
+  long stmt
+) long
+
+extern fn zen_mysql_stmt_close(
+  long stmt
+) void
+
+
+struct Row {
+  long handle
+
+  valid() bool {
+    return zen_mysql_row_valid(this.handle) != 0
+  }
+
+  getString(int index) string {
+    return zen_mysql_row_get_string(
+      this.handle,
+      index
+    )
+  }
+
+  getInt(int index) int {
+    return zen_mysql_row_get_int(
+      this.handle,
+      index
+    )
+  }
+
+  getLong(int index) long {
+    return zen_mysql_row_get_long(
+      this.handle,
+      index
+    )
+  }
+
+  getDouble(int index) double {
+    return zen_mysql_row_get_double(
+      this.handle,
+      index
+    )
+  }
+
+  close() void {
+    zen_mysql_row_free(this.handle)
+  }
+}
+
+
+struct Result {
+  long handle
+
+  columnCount() int {
+    return zen_mysql_column_count(this.handle)
+  }
+
+  rowCount() long {
+    return zen_mysql_row_count(this.handle)
+  }
+
+  next() Row {
+    long h = zen_mysql_next_row(this.handle)
+
+    return {
+      handle: h
+    }
+  }
+
+  close() void {
+    zen_mysql_result_free(this.handle)
+  }
+}
+
+
+struct Statement {
+  long handle
+
+  bindInt(int index, int value) int {
+    return zen_mysql_stmt_bind_int(
+      this.handle,
+      index,
+      value
+    )
+  }
+
+  bindLong(int index, long value) int {
+    return zen_mysql_stmt_bind_long(
+      this.handle,
+      index,
+      value
+    )
+  }
+
+  bindDouble(int index, double value) int {
+    return zen_mysql_stmt_bind_double(
+      this.handle,
+      index,
+      value
+    )
+  }
+
+  bindString(int index, string value) int {
+    return zen_mysql_stmt_bind_string(
+      this.handle,
+      index,
+      value
+    )
+  }
+
+  execute() int {
+    return zen_mysql_stmt_execute(this.handle)
+  }
+
+  affectedRows() long {
+    return zen_mysql_stmt_affected_rows(this.handle)
+  }
+
+  close() void {
+    zen_mysql_stmt_close(this.handle)
+  }
+}
+
 
 struct Database {
   long handle
 
   ok() bool {
-    return this.handle != 0
+    return zen_mysql_ok(this.handle) != 0
   }
 
   query(string sql) int {
-    return zen_mysql_query(this.handle, sql)
+    return zen_mysql_query(
+      this.handle,
+      sql
+    )
   }
 
   error() string {
     return zen_mysql_error(this.handle)
+  }
+
+  affectedRows() long {
+    return zen_mysql_affected_rows(
+      this.handle
+    )
+  }
+
+  insertId() long {
+    return zen_mysql_insert_id(
+      this.handle
+    )
+  }
+
+  result() Result {
+    long h = zen_mysql_result(
+      this.handle
+    )
+
+    return {
+      handle: h
+    }
+  }
+
+  begin() int {
+    return zen_mysql_begin(this.handle)
+  }
+
+  commit() int {
+    return zen_mysql_commit(this.handle)
+  }
+
+  rollback() int {
+    return zen_mysql_rollback(this.handle)
+  }
+
+  prepare(string sql) Statement {
+    long h = zen_mysql_prepare(
+      this.handle,
+      sql
+    )
+
+    return {
+      handle: h
+    }
   }
 
   close() void {
@@ -62,5 +334,8 @@ fn connect(
 
 export(
   Database,
+  Result,
+  Row,
+  Statement,
   connect
 )

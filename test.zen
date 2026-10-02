@@ -6,14 +6,33 @@ import (
   connect
 ) from "lib.zen"
 
+import (Query) from "query-builder"
 
-Database db = connect(
-  "127.0.0.1",
-  "root",
-  "",
-  "test",
-  3306
-)
+
+fn check(Database db, int code) void {
+  if (code != 0) {
+    screen(db.error())
+    db.close()
+    os.exit(1)
+  }
+}
+
+fn getcount(Database db) long {
+  db.query("SELECT COUNT(*) FROM zen_test")
+
+  Result r = db.result()
+  Row row = r.next()
+  long n = row.getLong(0)
+
+  row.close()
+  r.close()
+
+  return n
+}
+
+
+# connect
+Database db = connect("127.0.0.1", "root", "", "test", 3306)
 
 if (!db.ok()) {
   screen(db.error())
@@ -22,119 +41,192 @@ if (!db.ok()) {
 
 screen("connected")
 
-int code = db.query(
-  "DROP TABLE IF EXISTS users"
-)
 
-screen(code)
+# query
+check(db, db.query("DROP TABLE IF EXISTS zen_test"))
+check(db, db.query("CREATE TABLE zen_test (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50), age INT, score DOUBLE, big BIGINT NULL)"))
+check(db, db.query("INSERT INTO zen_test (name, age, score) VALUES ('Raw', 30, 1.5)"))
 
-code = db.query(
-  "CREATE TABLE users (id INT, name TEXT, age INT)"
-)
-
-screen(code)
-
-if (code != 0) {
-  screen(db.error())
-  os.exit(1)
-}
-
-
-code = db.query(
-  "INSERT INTO users (id, name, age) VALUES (2, 'Zen', 21)"
-)
-
-screen(code)
 screen(db.affectedRows())
 screen(db.insertId())
 
-if (code != 0) {
-  screen(db.error())
-  os.exit(1)
-}
 
+# result and row
+check(db, db.query("SELECT id, name, age, score, big FROM zen_test"))
 
-code = db.query(
-  "SELECT id, name, age FROM users"
-)
+Result r = db.result()
 
-screen(code)
+screen(r.ok())
+screen(r.columnCount())
+screen(r.rowCount())
 
-if (code != 0) {
-  screen(db.error())
-  os.exit(1)
-}
-
-
-Result result = db.result()
-
-screen(result.columnCount())
-screen(result.rowCount())
-
-
-Row row = result.next()
+Row row = r.next()
 
 while (row.valid()) {
   screen(row.getInt(0))
   screen(row.getString(1))
   screen(row.getInt(2))
+  screen(row.getDouble(3))
+  screen(row.getLong(4))
+  screen(row.isNull(4))
 
   row.close()
-
-  row = result.next()
+  row = r.next()
 }
 
-result.close()
+r.close()
 
 
-code = db.begin()
+# prepared statement
+Statement st = db.prepare("INSERT INTO zen_test (name, age, score, big) VALUES (?, ?, ?, ?)")
 
-screen(code)
+long big = 5000000000L
 
-if (code != 0) {
+st.bindString(0, "Prepared")
+st.bindInt(1, 25)
+st.bindDouble(2, 9.5)
+st.bindLong(3, big)
+
+check(db, st.execute())
+
+screen(st.affectedRows())
+screen(st.insertId())
+
+st.close()
+
+
+# prepared select
+Statement sel = db.prepare("SELECT id, name, big FROM zen_test WHERE age >= ?")
+
+sel.bindInt(0, 20)
+
+check(db, sel.execute())
+
+screen(sel.columnCount())
+screen(sel.rowCount())
+
+Row srow = sel.next()
+
+while (srow.valid()) {
+  screen(srow.getInt(0))
+  screen(srow.getString(1))
+  screen(srow.getLong(2))
+
+  srow.close()
+  srow = sel.next()
+}
+
+sel.close()
+
+
+# transaction
+check(db, db.begin())
+check(db, db.query("INSERT INTO zen_test (name, age) VALUES ('Rollback', 1)"))
+check(db, db.rollback())
+
+screen(getcount(db))
+
+check(db, db.begin())
+check(db, db.query("INSERT INTO zen_test (name, age) VALUES ('Commit', 2)"))
+check(db, db.commit())
+
+screen(getcount(db))
+
+
+# query-builder
+Query q
+q.useDialect("mysql")
+
+q.insertInto("zen_test")
+q.values(["name", "age"], ["Builder", "40"])
+
+Statement s = db.run(q.build(), q.getParameters())
+
+if (!s.ok()) {
   screen(db.error())
+  db.close()
   os.exit(1)
 }
 
+screen(s.affectedRows())
+screen(s.insertId())
+s.close()
 
-code = db.query(
-  "INSERT INTO users (id, name, age) VALUES (3, 'Transaction', 30)"
-)
+q.select(["id", "name", "age"])
+q.fromTable("zen_test")
+q.where("age", ">=", "30")
+q.orderBy("id", "asc")
+q.limit(2)
 
-screen(code)
+s = db.run(q.build(), q.getParameters())
 
-if (code != 0) {
+if (!s.ok()) {
   screen(db.error())
-  db.rollback()
+  db.close()
   os.exit(1)
 }
 
+screen(s.rowCount())
 
-code = db.rollback()
+Row qrow = s.next()
 
-screen(code)
+while (qrow.valid()) {
+  screen(qrow.getInt(0))
+  screen(qrow.getString(1))
+  screen(qrow.getInt(2))
 
-
-Statement stmt = db.prepare(
-  "INSERT INTO users (id, name, age) VALUES (?, ?, ?)"
-)
-
-stmt.bindInt(0, 4)
-stmt.bindString(1, "Prepared")
-stmt.bindInt(2, 25)
-
-code = stmt.execute()
-
-screen(code)
-screen(stmt.affectedRows())
-
-if (code != 0) {
-  screen(db.error())
+  qrow.close()
+  qrow = s.next()
 }
 
-stmt.close()
+s.close()
 
+q.update("zen_test")
+q.set("age", "41")
+q.where("name", "=", "Builder")
+
+s = db.run(q.build(), q.getParameters())
+
+if (!s.ok()) {
+  screen(db.error())
+  db.close()
+  os.exit(1)
+}
+
+screen(s.affectedRows())
+s.close()
+
+q.deleteFrom("zen_test")
+q.where("name", "=", "Builder")
+
+s = db.run(q.build(), q.getParameters())
+
+if (!s.ok()) {
+  screen(db.error())
+  db.close()
+  os.exit(1)
+}
+
+screen(s.affectedRows())
+s.close()
+
+screen(getcount(db))
+
+
+# errors
+Statement bad = db.prepare("SELEC")
+
+screen(bad.ok())
+screen(db.error())
+
+screen(db.query("SELECT * FROM missing_table"))
+screen(db.error())
+
+
+# cleanup
+// check(db, db.query("DROP TABLE zen_test"))
 
 db.close()
 
 screen("closed")
+

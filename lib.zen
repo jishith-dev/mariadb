@@ -47,6 +47,11 @@ extern fn zen_mysql_row_valid(
   long row
 ) int
 
+extern fn zen_mysql_row_is_null(
+  long row,
+  int index
+) int
+
 extern fn zen_mysql_row_get_string(
   long row,
   int index
@@ -118,9 +123,29 @@ extern fn zen_mysql_stmt_execute(
   long stmt
 ) int
 
+extern fn zen_mysql_stmt_next(
+  long stmt
+) long
+
+extern fn zen_mysql_stmt_column_count(
+  long stmt
+) int
+
+extern fn zen_mysql_stmt_row_count(
+  long stmt
+) long
+
 extern fn zen_mysql_stmt_affected_rows(
   long stmt
 ) long
+
+extern fn zen_mysql_stmt_insert_id(
+  long stmt
+) long
+
+extern fn zen_mysql_stmt_error(
+  long stmt
+) string
 
 extern fn zen_mysql_stmt_close(
   long stmt
@@ -132,6 +157,13 @@ struct Row {
 
   valid() bool {
     return zen_mysql_row_valid(this.handle) != 0
+  }
+
+  isNull(int index) bool {
+    return zen_mysql_row_is_null(
+      this.handle,
+      index
+    ) != 0
   }
 
   getString(int index) string {
@@ -164,12 +196,17 @@ struct Row {
 
   close() void {
     zen_mysql_row_free(this.handle)
+    this.handle = 0L
   }
 }
 
 
 struct Result {
   long handle
+
+  ok() bool {
+    return this.handle != 0
+  }
 
   columnCount() int {
     return zen_mysql_column_count(this.handle)
@@ -189,12 +226,17 @@ struct Result {
 
   close() void {
     zen_mysql_result_free(this.handle)
+    this.handle = 0L
   }
 }
 
 
 struct Statement {
   long handle
+
+  ok() bool {
+    return this.handle != 0L
+  }
 
   bindInt(int index, int value) int {
     return zen_mysql_stmt_bind_int(
@@ -228,16 +270,61 @@ struct Statement {
     )
   }
 
+  bindAll(List<string> params) int {
+    int i = 0
+
+    while (i < params.length) {
+      int code = zen_mysql_stmt_bind_string(
+        this.handle,
+        i,
+        params[i]
+      )
+
+      if (code != 0) {
+        return code
+      }
+
+      i = i + 1
+    }
+
+    return 0
+  }
+
   execute() int {
     return zen_mysql_stmt_execute(this.handle)
+  }
+
+  next() Row {
+    long h = zen_mysql_stmt_next(this.handle)
+
+    return {
+      handle: h
+    }
+  }
+
+  columnCount() int {
+    return zen_mysql_stmt_column_count(this.handle)
+  }
+
+  rowCount() long {
+    return zen_mysql_stmt_row_count(this.handle)
   }
 
   affectedRows() long {
     return zen_mysql_stmt_affected_rows(this.handle)
   }
 
+  insertId() long {
+    return zen_mysql_stmt_insert_id(this.handle)
+  }
+
+  error() string {
+    return zen_mysql_stmt_error(this.handle)
+  }
+
   close() void {
     zen_mysql_stmt_close(this.handle)
+    this.handle = 0L
   }
 }
 
@@ -305,8 +392,33 @@ struct Database {
     }
   }
 
+  run(string sql, List<string> params) Statement {
+    Statement stmt = this.prepare(sql)
+
+    if (!stmt.ok()) {
+      return stmt
+    }
+
+    int code = stmt.bindAll(params)
+
+    if (code == 0) {
+      code = stmt.execute()
+    }
+
+    if (code != 0) {
+      stmt.close()
+
+      return {
+        handle: 0L
+      }
+    }
+
+    return stmt
+  }
+
   close() void {
     zen_mysql_close(this.handle)
+    this.handle = 0L
   }
 }
 

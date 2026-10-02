@@ -1,19 +1,14 @@
-/*
- * mysql.c
- *
- * Zen <-> MySQL/MariaDB native bridge.
- *
- * Requires MariaDB Connector/C.
- */
-
 #include <mariadb/mysql.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
-/* ---------------------------------------------------------
- * Error state
- * --------------------------------------------------------- */
+#define ZEN_COL_BUF 256
+
+#define ZEN_MYSQL_BIND_INT    1
+#define ZEN_MYSQL_BIND_LONG   2
+#define ZEN_MYSQL_BIND_DOUBLE 3
+#define ZEN_MYSQL_BIND_STRING 4
 
 static char last_error[512];
 
@@ -28,11 +23,10 @@ static void set_error(const char *message)
     last_error[sizeof(last_error) - 1] = '\0';
 }
 
-/* ---------------------------------------------------------
- * Database
- * --------------------------------------------------------- */
+#define TO_HANDLE(p) ((int64_t)(intptr_t)(p))
+#define FROM_HANDLE(type, h) ((type *)(intptr_t)(h))
 
-long zen_mysql_connect(
+int64_t zen_mysql_connect(
     const char *host,
     const char *user,
     const char *password,
@@ -46,13 +40,21 @@ long zen_mysql_connect(
         return 0;
     }
 
+    unsigned int connect_timeout = 10;
+    unsigned int io_timeout = 60;
+
+    mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
+    mysql_options(db, MYSQL_OPT_READ_TIMEOUT, &io_timeout);
+    mysql_options(db, MYSQL_OPT_WRITE_TIMEOUT, &io_timeout);
+    mysql_options(db, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+
     if (!mysql_real_connect(
         db,
         host,
         user,
         password,
         database,
-        port,
+        (unsigned int)port,
         NULL,
         0
     )) {
@@ -63,46 +65,42 @@ long zen_mysql_connect(
 
     last_error[0] = '\0';
 
-    return (long)db;
+    return TO_HANDLE(db);
 }
 
-void zen_mysql_close(long handle)
+void zen_mysql_close(int64_t handle)
 {
     if (handle) {
-        mysql_close((MYSQL *)handle);
+        mysql_close(FROM_HANDLE(MYSQL, handle));
     }
 }
 
-int zen_mysql_ok(long handle)
+int zen_mysql_ok(int64_t handle)
 {
     return handle != 0;
 }
 
-const char *zen_mysql_error(long handle)
+const char *zen_mysql_error(int64_t handle)
 {
-    if (!handle) {
-        return last_error[0]
-            ? last_error
-            : "invalid database handle";
+    if (last_error[0]) {
+        return last_error;
     }
 
-    return mysql_error((MYSQL *)handle);
+    if (!handle) {
+        return "invalid database handle";
+    }
+
+    return mysql_error(FROM_HANDLE(MYSQL, handle));
 }
 
-/* ---------------------------------------------------------
- * Normal query
- * --------------------------------------------------------- */
-
-int zen_mysql_query(
-    long handle,
-    const char *sql
-) {
+int zen_mysql_query(int64_t handle, const char *sql)
+{
     if (!handle || !sql) {
         set_error("invalid database handle or SQL");
         return 1;
     }
 
-    MYSQL *db = (MYSQL *)handle;
+    MYSQL *db = FROM_HANDLE(MYSQL, handle);
 
     int result = mysql_query(db, sql);
 
@@ -115,45 +113,56 @@ int zen_mysql_query(
     return result;
 }
 
-/* ---------------------------------------------------------
- * Query statistics
- * --------------------------------------------------------- */
-
-long zen_mysql_affected_rows(long handle)
+int64_t zen_mysql_affected_rows(int64_t handle)
 {
     if (!handle) {
         return 0;
     }
 
-    return (long)mysql_affected_rows((MYSQL *)handle);
+    return (int64_t)mysql_affected_rows(FROM_HANDLE(MYSQL, handle));
 }
 
-long zen_mysql_insert_id(long handle)
+int64_t zen_mysql_insert_id(int64_t handle)
 {
     if (!handle) {
         return 0;
     }
 
-    return (long)mysql_insert_id((MYSQL *)handle);
+    return (int64_t)mysql_insert_id(FROM_HANDLE(MYSQL, handle));
 }
-
-/* ---------------------------------------------------------
- * SELECT Result
- * --------------------------------------------------------- */
 
 typedef struct {
     MYSQL_RES *result;
     unsigned int columns;
 } ZenMySQLResult;
 
-long zen_mysql_result(long handle)
+typedef struct {
+    MYSQL_ROW row;
+    unsigned int columns;
+    int owned;
+} ZenMySQLRow;
+
+static void row_destroy(ZenMySQLRow *row)
+{
+    if (row->owned && row->row) {
+        for (unsigned int i = 0; i < row->columns; i++) {
+            free(row->row[i]);
+        }
+
+        free(row->row);
+    }
+
+    free(row);
+}
+
+int64_t zen_mysql_result(int64_t handle)
 {
     if (!handle) {
         set_error("invalid database handle");
         return 0;
     }
 
-    MYSQL *db = (MYSQL *)handle;
+    MYSQL *db = FROM_HANDLE(MYSQL, handle);
 
     MYSQL_RES *res = mysql_store_result(db);
 
@@ -165,8 +174,7 @@ long zen_mysql_result(long handle)
         return 0;
     }
 
-    ZenMySQLResult *out =
-        (ZenMySQLResult *)malloc(sizeof(ZenMySQLResult));
+    ZenMySQLResult *out = (ZenMySQLResult *)malloc(sizeof(ZenMySQLResult));
 
     if (!out) {
         mysql_free_result(res);
@@ -179,61 +187,44 @@ long zen_mysql_result(long handle)
 
     last_error[0] = '\0';
 
-    return (long)out;
+    return TO_HANDLE(out);
 }
 
-int zen_mysql_column_count(long result_handle)
+int zen_mysql_column_count(int64_t result_handle)
 {
     if (!result_handle) {
         return 0;
     }
 
-    ZenMySQLResult *res =
-        (ZenMySQLResult *)result_handle;
-
-    return (int)res->columns;
+    return (int)FROM_HANDLE(ZenMySQLResult, result_handle)->columns;
 }
 
-long zen_mysql_row_count(long result_handle)
+int64_t zen_mysql_row_count(int64_t result_handle)
 {
     if (!result_handle) {
         return 0;
     }
 
-    ZenMySQLResult *res =
-        (ZenMySQLResult *)result_handle;
-
-    return (long)mysql_num_rows(res->result);
+    return (int64_t)mysql_num_rows(
+        FROM_HANDLE(ZenMySQLResult, result_handle)->result
+    );
 }
 
-/* ---------------------------------------------------------
- * Row
- * --------------------------------------------------------- */
-
-typedef struct {
-    MYSQL_ROW row;
-    unsigned long *lengths;
-    unsigned int columns;
-} ZenMySQLRow;
-
-long zen_mysql_next_row(long result_handle)
+int64_t zen_mysql_next_row(int64_t result_handle)
 {
     if (!result_handle) {
         return 0;
     }
 
-    ZenMySQLResult *res =
-        (ZenMySQLResult *)result_handle;
+    ZenMySQLResult *res = FROM_HANDLE(ZenMySQLResult, result_handle);
 
-    MYSQL_ROW row =
-        mysql_fetch_row(res->result);
+    MYSQL_ROW row = mysql_fetch_row(res->result);
 
     if (!row) {
         return 0;
     }
 
-    ZenMySQLRow *out =
-        (ZenMySQLRow *)malloc(sizeof(ZenMySQLRow));
+    ZenMySQLRow *out = (ZenMySQLRow *)calloc(1, sizeof(ZenMySQLRow));
 
     if (!out) {
         set_error("out of memory");
@@ -241,27 +232,39 @@ long zen_mysql_next_row(long result_handle)
     }
 
     out->row = row;
-    out->lengths = mysql_fetch_lengths(res->result);
     out->columns = res->columns;
+    out->owned = 0;
 
-    return (long)out;
+    return TO_HANDLE(out);
 }
 
-int zen_mysql_row_valid(long row_handle)
+int zen_mysql_row_valid(int64_t row_handle)
 {
     return row_handle != 0;
 }
 
-const char *zen_mysql_row_get_string(
-    long row_handle,
-    int index
-) {
+int zen_mysql_row_is_null(int64_t row_handle, int index)
+{
+    if (!row_handle) {
+        return 1;
+    }
+
+    ZenMySQLRow *row = FROM_HANDLE(ZenMySQLRow, row_handle);
+
+    if (index < 0 || (unsigned int)index >= row->columns) {
+        return 1;
+    }
+
+    return row->row[index] == NULL;
+}
+
+const char *zen_mysql_row_get_string(int64_t row_handle, int index)
+{
     if (!row_handle) {
         return "";
     }
 
-    ZenMySQLRow *row =
-        (ZenMySQLRow *)row_handle;
+    ZenMySQLRow *row = FROM_HANDLE(ZenMySQLRow, row_handle);
 
     if (index < 0 || (unsigned int)index >= row->columns) {
         return "";
@@ -274,69 +277,55 @@ const char *zen_mysql_row_get_string(
     return row->row[index];
 }
 
-int zen_mysql_row_get_int(
-    long row_handle,
-    int index
-) {
-    const char *value =
-        zen_mysql_row_get_string(row_handle, index);
+int zen_mysql_row_get_int(int64_t row_handle, int index)
+{
+    const char *value = zen_mysql_row_get_string(row_handle, index);
 
-    if (!value || !value[0]) {
+    if (!value[0]) {
         return 0;
     }
 
     return atoi(value);
 }
 
-long zen_mysql_row_get_long(
-    long row_handle,
-    int index
-) {
-    const char *value =
-        zen_mysql_row_get_string(row_handle, index);
+int64_t zen_mysql_row_get_long(int64_t row_handle, int index)
+{
+    const char *value = zen_mysql_row_get_string(row_handle, index);
 
-    if (!value || !value[0]) {
+    if (!value[0]) {
         return 0;
     }
 
-    return atol(value);
+    return (int64_t)strtoll(value, NULL, 10);
 }
 
-double zen_mysql_row_get_double(
-    long row_handle,
-    int index
-) {
-    const char *value =
-        zen_mysql_row_get_string(row_handle, index);
+double zen_mysql_row_get_double(int64_t row_handle, int index)
+{
+    const char *value = zen_mysql_row_get_string(row_handle, index);
 
-    if (!value || !value[0]) {
+    if (!value[0]) {
         return 0.0;
     }
 
     return atof(value);
 }
 
-void zen_mysql_row_free(long row_handle)
+void zen_mysql_row_free(int64_t row_handle)
 {
     if (!row_handle) {
         return;
     }
 
-    free((ZenMySQLRow *)row_handle);
+    row_destroy(FROM_HANDLE(ZenMySQLRow, row_handle));
 }
 
-/* ---------------------------------------------------------
- * Result cleanup
- * --------------------------------------------------------- */
-
-void zen_mysql_result_free(long result_handle)
+void zen_mysql_result_free(int64_t result_handle)
 {
     if (!result_handle) {
         return;
     }
 
-    ZenMySQLResult *res =
-        (ZenMySQLResult *)result_handle;
+    ZenMySQLResult *res = FROM_HANDLE(ZenMySQLResult, result_handle);
 
     if (res->result) {
         mysql_free_result(res->result);
@@ -345,28 +334,20 @@ void zen_mysql_result_free(long result_handle)
     free(res);
 }
 
-/* ---------------------------------------------------------
- * Transactions
- * --------------------------------------------------------- */
-
-int zen_mysql_begin(long handle)
+int zen_mysql_begin(int64_t handle)
 {
     return zen_mysql_query(handle, "START TRANSACTION");
 }
 
-int zen_mysql_commit(long handle)
+int zen_mysql_commit(int64_t handle)
 {
     return zen_mysql_query(handle, "COMMIT");
 }
 
-int zen_mysql_rollback(long handle)
+int zen_mysql_rollback(int64_t handle)
 {
     return zen_mysql_query(handle, "ROLLBACK");
 }
-
-/* ---------------------------------------------------------
- * Prepared statements
- * --------------------------------------------------------- */
 
 typedef struct {
     MYSQL_STMT *stmt;
@@ -376,29 +357,70 @@ typedef struct {
 
     char **strings;
     unsigned long *string_lengths;
-
     int *ints;
-    long *longs;
+    int64_t *longs;
     double *doubles;
-
     unsigned char *types;
+
+    MYSQL_BIND *rbinds;
+    char **rbufs;
+    unsigned long *rlengths;
+    unsigned char *rnull;
+    unsigned int columns;
 } ZenMySQLStmt;
 
-#define ZEN_MYSQL_BIND_INT    1
-#define ZEN_MYSQL_BIND_LONG   2
-#define ZEN_MYSQL_BIND_DOUBLE 3
-#define ZEN_MYSQL_BIND_STRING 4
+static void stmt_result_free(ZenMySQLStmt *s)
+{
+    if (s->rbufs) {
+        for (unsigned int i = 0; i < s->columns; i++) {
+            free(s->rbufs[i]);
+        }
+    }
 
-long zen_mysql_prepare(
-    long handle,
-    const char *sql
-) {
+    free(s->rbinds);
+    free(s->rbufs);
+    free(s->rlengths);
+    free(s->rnull);
+
+    s->rbinds = NULL;
+    s->rbufs = NULL;
+    s->rlengths = NULL;
+    s->rnull = NULL;
+    s->columns = 0;
+}
+
+static void stmt_destroy(ZenMySQLStmt *s)
+{
+    if (s->stmt) {
+        mysql_stmt_close(s->stmt);
+    }
+
+    if (s->strings) {
+        for (unsigned int i = 0; i < s->param_count; i++) {
+            free(s->strings[i]);
+        }
+    }
+
+    stmt_result_free(s);
+
+    free(s->binds);
+    free(s->strings);
+    free(s->string_lengths);
+    free(s->ints);
+    free(s->longs);
+    free(s->doubles);
+    free(s->types);
+    free(s);
+}
+
+int64_t zen_mysql_prepare(int64_t handle, const char *sql)
+{
     if (!handle || !sql) {
         set_error("invalid database handle or SQL");
         return 0;
     }
 
-    MYSQL *db = (MYSQL *)handle;
+    MYSQL *db = FROM_HANDLE(MYSQL, handle);
 
     MYSQL_STMT *stmt = mysql_stmt_init(db);
 
@@ -407,18 +429,13 @@ long zen_mysql_prepare(
         return 0;
     }
 
-    if (mysql_stmt_prepare(
-        stmt,
-        sql,
-        (unsigned long)strlen(sql)
-    ) != 0) {
+    if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) {
         set_error(mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return 0;
     }
 
-    ZenMySQLStmt *out =
-        (ZenMySQLStmt *)calloc(1, sizeof(ZenMySQLStmt));
+    ZenMySQLStmt *out = (ZenMySQLStmt *)calloc(1, sizeof(ZenMySQLStmt));
 
     if (!out) {
         set_error("out of memory");
@@ -430,242 +447,226 @@ long zen_mysql_prepare(
     out->param_count = mysql_stmt_param_count(stmt);
 
     if (out->param_count > 0) {
-        out->binds =
-            (MYSQL_BIND *)calloc(
-                out->param_count,
-                sizeof(MYSQL_BIND)
-            );
+        unsigned int n = out->param_count;
 
-        out->strings =
-            (char **)calloc(
-                out->param_count,
-                sizeof(char *)
-            );
+        out->binds = (MYSQL_BIND *)calloc(n, sizeof(MYSQL_BIND));
+        out->strings = (char **)calloc(n, sizeof(char *));
+        out->string_lengths = (unsigned long *)calloc(n, sizeof(unsigned long));
+        out->ints = (int *)calloc(n, sizeof(int));
+        out->longs = (int64_t *)calloc(n, sizeof(int64_t));
+        out->doubles = (double *)calloc(n, sizeof(double));
+        out->types = (unsigned char *)calloc(n, sizeof(unsigned char));
 
-        out->string_lengths =
-            (unsigned long *)calloc(
-                out->param_count,
-                sizeof(unsigned long)
-            );
-
-        out->ints =
-            (int *)calloc(
-                out->param_count,
-                sizeof(int)
-            );
-
-        out->longs =
-            (long *)calloc(
-                out->param_count,
-                sizeof(long)
-            );
-
-        out->doubles =
-            (double *)calloc(
-                out->param_count,
-                sizeof(double)
-            );
-
-        out->types =
-            (unsigned char *)calloc(
-                out->param_count,
-                sizeof(unsigned char)
-            );
+        if (!out->binds || !out->strings || !out->string_lengths ||
+            !out->ints || !out->longs || !out->doubles || !out->types) {
+            set_error("out of memory");
+            stmt_destroy(out);
+            return 0;
+        }
     }
 
     last_error[0] = '\0';
 
-    return (long)out;
+    return TO_HANDLE(out);
 }
 
-/* ---------------------------------------------------------
- * Prepared statement binding
- * --------------------------------------------------------- */
-
-static int valid_param(
-    ZenMySQLStmt *stmt,
-    int index
-) {
-    if (!stmt) {
-        return 0;
-    }
-
-    if (index < 0 ||
-        (unsigned int)index >= stmt->param_count) {
-        return 0;
-    }
-
-    return 1;
-}
-
-int zen_mysql_stmt_bind_int(
-    long stmt_handle,
-    int index,
-    int value
-) {
+static ZenMySQLStmt *param_stmt(int64_t stmt_handle, int index)
+{
     if (!stmt_handle) {
         set_error("invalid statement");
-        return 1;
+        return NULL;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
+    ZenMySQLStmt *s = FROM_HANDLE(ZenMySQLStmt, stmt_handle);
 
-    if (!valid_param(stmt, index)) {
+    if (index < 0 || (unsigned int)index >= s->param_count) {
         set_error("invalid parameter index");
+        return NULL;
+    }
+
+    return s;
+}
+
+int zen_mysql_stmt_bind_int(int64_t stmt_handle, int index, int value)
+{
+    ZenMySQLStmt *s = param_stmt(stmt_handle, index);
+
+    if (!s) {
         return 1;
     }
 
-    stmt->ints[index] = value;
-    stmt->types[index] = ZEN_MYSQL_BIND_INT;
+    s->ints[index] = value;
+    s->types[index] = ZEN_MYSQL_BIND_INT;
 
-    MYSQL_BIND *bind = &stmt->binds[index];
+    MYSQL_BIND *bind = &s->binds[index];
 
     memset(bind, 0, sizeof(MYSQL_BIND));
 
     bind->buffer_type = MYSQL_TYPE_LONG;
-    bind->buffer = &stmt->ints[index];
+    bind->buffer = &s->ints[index];
 
     return 0;
 }
 
-int zen_mysql_stmt_bind_long(
-    long stmt_handle,
-    int index,
-    long value
-) {
-    if (!stmt_handle) {
-        set_error("invalid statement");
+int zen_mysql_stmt_bind_long(int64_t stmt_handle, int index, int64_t value)
+{
+    ZenMySQLStmt *s = param_stmt(stmt_handle, index);
+
+    if (!s) {
         return 1;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
+    s->longs[index] = value;
+    s->types[index] = ZEN_MYSQL_BIND_LONG;
 
-    if (!valid_param(stmt, index)) {
-        set_error("invalid parameter index");
-        return 1;
-    }
-
-    stmt->longs[index] = value;
-    stmt->types[index] = ZEN_MYSQL_BIND_LONG;
-
-    MYSQL_BIND *bind = &stmt->binds[index];
+    MYSQL_BIND *bind = &s->binds[index];
 
     memset(bind, 0, sizeof(MYSQL_BIND));
 
     bind->buffer_type = MYSQL_TYPE_LONGLONG;
-    bind->buffer = &stmt->longs[index];
+    bind->buffer = &s->longs[index];
 
     return 0;
 }
 
-int zen_mysql_stmt_bind_double(
-    long stmt_handle,
-    int index,
-    double value
-) {
-    if (!stmt_handle) {
-        set_error("invalid statement");
+int zen_mysql_stmt_bind_double(int64_t stmt_handle, int index, double value)
+{
+    ZenMySQLStmt *s = param_stmt(stmt_handle, index);
+
+    if (!s) {
         return 1;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
+    s->doubles[index] = value;
+    s->types[index] = ZEN_MYSQL_BIND_DOUBLE;
 
-    if (!valid_param(stmt, index)) {
-        set_error("invalid parameter index");
-        return 1;
-    }
-
-    stmt->doubles[index] = value;
-    stmt->types[index] = ZEN_MYSQL_BIND_DOUBLE;
-
-    MYSQL_BIND *bind = &stmt->binds[index];
+    MYSQL_BIND *bind = &s->binds[index];
 
     memset(bind, 0, sizeof(MYSQL_BIND));
 
     bind->buffer_type = MYSQL_TYPE_DOUBLE;
-    bind->buffer = &stmt->doubles[index];
+    bind->buffer = &s->doubles[index];
 
     return 0;
 }
 
 int zen_mysql_stmt_bind_string(
-    long stmt_handle,
+    int64_t stmt_handle,
     int index,
     const char *value
 ) {
-    if (!stmt_handle) {
-        set_error("invalid statement");
+    ZenMySQLStmt *s = param_stmt(stmt_handle, index);
+
+    if (!s) {
         return 1;
     }
-
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
-
-    if (!valid_param(stmt, index)) {
-        set_error("invalid parameter index");
-        return 1;
-    }
-
-    free(stmt->strings[index]);
 
     if (!value) {
         value = "";
     }
 
-    stmt->strings[index] =
-        strdup(value);
+    char *copy = strdup(value);
 
-    if (!stmt->strings[index]) {
+    if (!copy) {
         set_error("out of memory");
         return 1;
     }
 
-    stmt->string_lengths[index] =
-        (unsigned long)strlen(value);
+    free(s->strings[index]);
 
-    stmt->types[index] = ZEN_MYSQL_BIND_STRING;
+    s->strings[index] = copy;
+    s->string_lengths[index] = (unsigned long)strlen(copy);
+    s->types[index] = ZEN_MYSQL_BIND_STRING;
 
-    MYSQL_BIND *bind = &stmt->binds[index];
+    MYSQL_BIND *bind = &s->binds[index];
 
     memset(bind, 0, sizeof(MYSQL_BIND));
 
     bind->buffer_type = MYSQL_TYPE_STRING;
-    bind->buffer = stmt->strings[index];
-    bind->buffer_length = stmt->string_lengths[index];
-    bind->length = &stmt->string_lengths[index];
+    bind->buffer = copy;
+    bind->buffer_length = s->string_lengths[index];
+    bind->length = &s->string_lengths[index];
 
     return 0;
 }
 
-/* ---------------------------------------------------------
- * Prepared statement execute
- * --------------------------------------------------------- */
+static int stmt_result_setup(ZenMySQLStmt *s)
+{
+    unsigned int n = mysql_stmt_field_count(s->stmt);
 
-int zen_mysql_stmt_execute(long stmt_handle)
+    if (n == 0) {
+        return 0;
+    }
+
+    s->columns = n;
+    s->rbinds = (MYSQL_BIND *)calloc(n, sizeof(MYSQL_BIND));
+    s->rbufs = (char **)calloc(n, sizeof(char *));
+    s->rlengths = (unsigned long *)calloc(n, sizeof(unsigned long));
+    s->rnull = (unsigned char *)calloc(n, sizeof(unsigned char));
+
+    if (!s->rbinds || !s->rbufs || !s->rlengths || !s->rnull) {
+        set_error("out of memory");
+        stmt_result_free(s);
+        return 1;
+    }
+
+    for (unsigned int i = 0; i < n; i++) {
+        s->rbufs[i] = (char *)malloc(ZEN_COL_BUF);
+
+        if (!s->rbufs[i]) {
+            set_error("out of memory");
+            stmt_result_free(s);
+            return 1;
+        }
+
+        s->rbinds[i].buffer_type = MYSQL_TYPE_STRING;
+        s->rbinds[i].buffer = s->rbufs[i];
+        s->rbinds[i].buffer_length = ZEN_COL_BUF - 1;
+        s->rbinds[i].length = &s->rlengths[i];
+        s->rbinds[i].is_null = (void *)&s->rnull[i];
+    }
+
+    if (mysql_stmt_bind_result(s->stmt, s->rbinds) != 0 ||
+        mysql_stmt_store_result(s->stmt) != 0) {
+        set_error(mysql_stmt_error(s->stmt));
+        stmt_result_free(s);
+        return 1;
+    }
+
+    return 0;
+}
+
+int zen_mysql_stmt_execute(int64_t stmt_handle)
 {
     if (!stmt_handle) {
         set_error("invalid statement");
         return 1;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
+    ZenMySQLStmt *s = FROM_HANDLE(ZenMySQLStmt, stmt_handle);
 
-    if (stmt->param_count > 0) {
-        if (mysql_stmt_bind_param(
-            stmt->stmt,
-            stmt->binds
-        ) != 0) {
-            set_error(mysql_stmt_error(stmt->stmt));
+    stmt_result_free(s);
+
+    for (unsigned int i = 0; i < s->param_count; i++) {
+        if (!s->types[i]) {
+            set_error("unbound parameter");
             return 1;
         }
     }
 
-    if (mysql_stmt_execute(stmt->stmt) != 0) {
-        set_error(mysql_stmt_error(stmt->stmt));
+    if (s->param_count > 0) {
+        if (mysql_stmt_bind_param(s->stmt, s->binds) != 0) {
+            set_error(mysql_stmt_error(s->stmt));
+            return 1;
+        }
+    }
+
+    if (mysql_stmt_execute(s->stmt) != 0) {
+        set_error(mysql_stmt_error(s->stmt));
+        return 1;
+    }
+
+    if (stmt_result_setup(s) != 0) {
         return 1;
     }
 
@@ -674,50 +675,149 @@ int zen_mysql_stmt_execute(long stmt_handle)
     return 0;
 }
 
-long zen_mysql_stmt_affected_rows(long stmt_handle)
+int64_t zen_mysql_stmt_next(int64_t stmt_handle)
 {
     if (!stmt_handle) {
         return 0;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
+    ZenMySQLStmt *s = FROM_HANDLE(ZenMySQLStmt, stmt_handle);
 
-    return (long)mysql_stmt_affected_rows(stmt->stmt);
+    if (!s->rbinds) {
+        return 0;
+    }
+
+    int rc = mysql_stmt_fetch(s->stmt);
+
+    if (rc == 1) {
+        set_error(mysql_stmt_error(s->stmt));
+        return 0;
+    }
+
+    if (rc == MYSQL_NO_DATA) {
+        return 0;
+    }
+
+    ZenMySQLRow *out = (ZenMySQLRow *)calloc(1, sizeof(ZenMySQLRow));
+    char **values = (char **)calloc(s->columns, sizeof(char *));
+
+    if (!out || !values) {
+        free(out);
+        free(values);
+        set_error("out of memory");
+        return 0;
+    }
+
+    out->row = values;
+    out->columns = s->columns;
+    out->owned = 1;
+
+    for (unsigned int i = 0; i < s->columns; i++) {
+        if (s->rnull[i]) {
+            continue;
+        }
+
+        unsigned long len = s->rlengths[i];
+
+        char *copy = (char *)malloc(len + 1);
+
+        if (!copy) {
+            set_error("out of memory");
+            row_destroy(out);
+            return 0;
+        }
+
+        if (len > s->rbinds[i].buffer_length) {
+            MYSQL_BIND bind;
+
+            memset(&bind, 0, sizeof(bind));
+
+            bind.buffer_type = MYSQL_TYPE_STRING;
+            bind.buffer = copy;
+            bind.buffer_length = len;
+
+            if (mysql_stmt_fetch_column(s->stmt, &bind, i, 0) != 0) {
+                set_error(mysql_stmt_error(s->stmt));
+                free(copy);
+                row_destroy(out);
+                return 0;
+            }
+        } else {
+            memcpy(copy, s->rbufs[i], len);
+        }
+
+        copy[len] = '\0';
+        values[i] = copy;
+    }
+
+    return TO_HANDLE(out);
 }
 
-/* ---------------------------------------------------------
- * Prepared statement close
- * --------------------------------------------------------- */
+int zen_mysql_stmt_column_count(int64_t stmt_handle)
+{
+    if (!stmt_handle) {
+        return 0;
+    }
 
-void zen_mysql_stmt_close(long stmt_handle)
+    return (int)FROM_HANDLE(ZenMySQLStmt, stmt_handle)->columns;
+}
+
+int64_t zen_mysql_stmt_row_count(int64_t stmt_handle)
+{
+    if (!stmt_handle) {
+        return 0;
+    }
+
+    ZenMySQLStmt *s = FROM_HANDLE(ZenMySQLStmt, stmt_handle);
+
+    if (!s->rbinds) {
+        return 0;
+    }
+
+    return (int64_t)mysql_stmt_num_rows(s->stmt);
+}
+
+int64_t zen_mysql_stmt_affected_rows(int64_t stmt_handle)
+{
+    if (!stmt_handle) {
+        return 0;
+    }
+
+    return (int64_t)mysql_stmt_affected_rows(
+        FROM_HANDLE(ZenMySQLStmt, stmt_handle)->stmt
+    );
+}
+
+int64_t zen_mysql_stmt_insert_id(int64_t stmt_handle)
+{
+    if (!stmt_handle) {
+        return 0;
+    }
+
+    return (int64_t)mysql_stmt_insert_id(
+        FROM_HANDLE(ZenMySQLStmt, stmt_handle)->stmt
+    );
+}
+
+const char *zen_mysql_stmt_error(int64_t stmt_handle)
+{
+    if (last_error[0]) {
+        return last_error;
+    }
+
+    if (!stmt_handle) {
+        return "invalid statement";
+    }
+
+    return mysql_stmt_error(FROM_HANDLE(ZenMySQLStmt, stmt_handle)->stmt);
+}
+
+void zen_mysql_stmt_close(int64_t stmt_handle)
 {
     if (!stmt_handle) {
         return;
     }
 
-    ZenMySQLStmt *stmt =
-        (ZenMySQLStmt *)stmt_handle;
-
-    if (stmt->stmt) {
-        mysql_stmt_close(stmt->stmt);
-    }
-
-    if (stmt->strings) {
-        for (unsigned int i = 0;
-             i < stmt->param_count;
-             i++) {
-            free(stmt->strings[i]);
-        }
-    }
-
-    free(stmt->binds);
-    free(stmt->strings);
-    free(stmt->string_lengths);
-    free(stmt->ints);
-    free(stmt->longs);
-    free(stmt->doubles);
-    free(stmt->types);
-
-    free(stmt);
+    stmt_destroy(FROM_HANDLE(ZenMySQLStmt, stmt_handle));
 }
+

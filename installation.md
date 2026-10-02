@@ -10,48 +10,62 @@ Then install the package:
 zen install mariadb
 ```
 
-## Install MariaDB
+## MariaDB Requirements
 
-The `mariadb` Zen package uses the MariaDB C client library.
+The `mariadb` Zen package uses the **MariaDB Connector/C** client library.
 
-You must have **MariaDB Connector/C** installed on your system before using this package.
+You need:
 
-The package provides the native implementation:
+1. MariaDB Connector/C development files
+2. A running MariaDB server when using the package
+
+The package includes its native implementation:
 
 ```text
-native/mysql.c
+native/mariadb.c
 ```
 
-Zen automatically compiles this C source into a target-specific `.o` file during compilation.
+Zen automatically compiles the native source for the current target and links it with the MariaDB client library.
 
-You do not need to manually compile `mysql.c`.
+You do not need to manually compile the native C source.
 
-### Linux
+## Linux
 
-Install the MariaDB Connector/C development package using your distribution's package manager.
+Install MariaDB Connector/C development files using your distribution's package manager.
 
-### Android / Termux
+You may also need to install and start a MariaDB server if you are connecting to a local database.
+
+## Android / Termux
 
 Install the MariaDB client/development package available for Termux.
 
-### Windows
+Make sure your MariaDB server is running before connecting to it.
+
+## Windows
 
 Install MariaDB Connector/C for Windows and make sure its headers and libraries are available to the compiler.
 
-### macOS
+## macOS
 
 Install MariaDB Connector/C using the available package manager or MariaDB distribution.
 
-## Build
+## Usage
 
-After Zen and MariaDB Connector/C are installed, simply use the package normally:
+After Zen and MariaDB Connector/C are installed, import the package:
 
 ```zen
 import (
   Database,
+  Result,
+  Row,
+  Statement,
   connect
 ) from "mariadb"
+```
 
+Then connect to MariaDB:
+
+```zen
 Database db = connect(
   "127.0.0.1",
   "root",
@@ -59,6 +73,11 @@ Database db = connect(
   "test",
   3306
 )
+
+if (!db.ok()) {
+  screen(db.error())
+  os.exit(1)
+}
 ```
 
-Zen automatically compiles the package's `native/mysql.c` for the current target and links it with the MariaDB client library.
+Zen automatically compiles the package's `native/mariadb.c` for the current target and links it with the MariaDB client library.
